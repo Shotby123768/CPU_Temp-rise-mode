@@ -92,7 +92,7 @@ cd ~ && rm -rf risemode-cooler-linux && tar xzf "$(find ~ -maxdepth 3 -name 'ris
 
 Pronto. O display passa a mostrar a temperatura em poucos segundos, e o serviço liga sozinho toda vez que o PC iniciar. Pode fechar o terminal.
 
-Para abrir o painel, procure **Rise Mode Cooler** no menu de aplicativos.
+Para abrir o painel, aperte a tecla **⊞ Windows**, digite **Rise Mode** e clique em **Rise Mode Cooler**. Veja a seção [Painel](#painel).
 
 O comando acha o arquivo baixado mais recente em qualquer pasta (`Downloads`, `Transferências`…), extrai e instala.
 
@@ -187,7 +187,9 @@ sudo systemctl disable --now risemode-cooler  # parar e não iniciar mais no boo
 
 ## Painel
 
-Abra pelo menu de aplicativos: **Rise Mode Cooler**.
+**Como abrir:** aperte a tecla **⊞ Windows** (ou clique no menu de aplicativos, no canto da tela), digite **Rise Mode** e clique em **Rise Mode Cooler**. Pelo terminal, o comando é `risemode-cooler-panel`.
+
+Para achar mais rápido depois: com o painel aberto, clique com o botão direito no ícone dele na barra de tarefas e escolha **Fixar** (ou **Adicionar aos favoritos**).
 
 ![Painel do cooler](docs/painel.png)
 

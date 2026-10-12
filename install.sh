@@ -76,7 +76,7 @@ echo "Instalado. Status:"
 systemctl --no-pager status risemode-cooler | head -n 8
 echo
 if [ "$PANEL" = 1 ]; then
-    echo "Painel: procure \"Rise Mode Cooler\" no menu de aplicativos."
+    echo "Painel: aperte a tecla Windows, digite \"Rise Mode\" e clique em \"Rise Mode Cooler\"."
 else
     echo "Painel não instalado: falta python3-gi (sudo apt install python3-gi gir1.2-gtk-4.0)"
     echo "O display funciona normalmente sem o painel."
