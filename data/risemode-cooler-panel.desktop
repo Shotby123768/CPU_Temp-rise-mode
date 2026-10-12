@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Rise Mode Cooler
+GenericName=Painel do cooler
+Comment=Veja a temperatura da CPU e escolha o que o display do cooler mostra
+Exec=/usr/local/bin/risemode-cooler-panel
+Icon=risemode-cooler
+Terminal=false
+Categories=System;Monitor;
+Keywords=cooler;temperatura;cpu;display;watts;
+StartupNotify=true
+StartupWMClass=io.github.risemode_cooler.Panel

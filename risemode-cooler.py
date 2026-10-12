@@ -2,7 +2,7 @@
 """
 Rise Mode Air Cooler Temp 6 (display digital) - driver para Linux.
 
-Versao 1.2
+Versao 2.0
 
 Reimplementa o protocolo do "CPU TEMP Monitor" (DeviceDriver.exe) do Windows:
   - Dispositivo USB HID 1A2C:4984, interface com usage page 0xFF01
@@ -18,15 +18,23 @@ Reimplementa o protocolo do "CPU TEMP Monitor" (DeviceDriver.exe) do Windows:
       [8..63] 0
 
 Sem dependencias: usa /dev/hidraw via ioctl e le sensores do /sys.
+
+Desde a 2.0 conversa com o painel grafico por dois arquivos:
+  - /run/risemode-cooler/status.json   (daemon -> painel, gravado a cada envio)
+  - /etc/risemode-cooler/config.json   (painel -> daemon, relido sem restart)
 """
 import argparse
 import errno
 import fcntl
 import glob
+import json
 import os
 import signal
 import sys
+import tempfile
 import time
+
+VERSION = "2.0"
 
 VID = 0x1A2C
 PID = 0x4984
@@ -302,42 +310,337 @@ class CpuPower:
         return de / dt / 1e6
 
 
+# ---------------------------------------------------------------- Configuracao e status
+
+CONFIG_PATH = "/etc/risemode-cooler/config.json"
+STATUS_PATH = "/run/risemode-cooler/status.json"
+DEFAULTS = {"unit": "C", "mode": "W", "interval": 1.0}
+
+
+def _log(msg):
+    print(msg, file=sys.stderr, flush=True)
+
+
+def read_config_json(path):
+    """Le o config.json do painel. Retorna so as chaves validas ({} se nao existir).
+
+    Mesmas regras do helper set-config: unit C/F, mode W/%, interval de 1 a 10.
+    """
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        _log(f"[config] ignorando {path}: {e}")
+        return {}
+    if not isinstance(data, dict):
+        _log(f"[config] ignorando {path}: formato invalido")
+        return {}
+    out = {}
+    if data.get("unit") in ("C", "F"):
+        out["unit"] = data["unit"]
+    if data.get("mode") in ("W", "%"):
+        out["mode"] = data["mode"]
+    iv = data.get("interval")
+    if isinstance(iv, (int, float)) and not isinstance(iv, bool) and 1 <= iv <= 10:
+        out["interval"] = float(iv)
+    bad = sorted(k for k in data if k not in out)
+    if bad:
+        _log(f"[config] valores invalidos ignorados em {path}: {', '.join(bad)}")
+    return out
+
+
+def env_settings(environ):
+    """Variaveis RM_* do /etc/default/risemode-cooler (formato da 1.x)."""
+    out = {}
+    unit = environ.get("RM_UNIT", "").strip().upper()
+    if unit in ("C", "F"):
+        out["unit"] = unit
+    mode = environ.get("RM_MODE", "").strip().upper()
+    if mode in ("W", "%"):
+        out["mode"] = mode
+    try:
+        iv = float(environ["RM_INTERVAL"])
+        if iv > 0:
+            out["interval"] = iv
+    except (KeyError, ValueError):
+        pass
+    return out
+
+
+def resolve_settings(cli, from_json, from_env):
+    """Prioridade: linha de comando > config.json > RM_* > padrao."""
+    out = dict(DEFAULTS)
+    for src in (from_env, from_json, cli):
+        out.update({k: v for k, v in src.items() if v is not None})
+    return out
+
+
+class StatusFile:
+    """Grava o status.json de forma atomica (temporario + os.replace)."""
+
+    def __init__(self, path):
+        self.path = path
+        self.warned = False
+
+    def write(self, data):
+        if not self.path:
+            return
+        d = os.path.dirname(self.path) or "."
+        try:
+            if not os.path.isdir(d):
+                os.makedirs(d, exist_ok=True)
+                os.chmod(d, 0o755)
+            fd, tmp = tempfile.mkstemp(dir=d, prefix=".status-", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w") as f:
+                    json.dump(data, f)
+                os.chmod(tmp, 0o644)
+                os.replace(tmp, self.path)
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+            self.warned = False
+        except OSError as e:
+            if not self.warned:
+                _log(f"[status] nao consegui gravar {self.path}: {e}")
+                self.warned = True
+
+
+def classify_error(err):
+    """Estado do status.json para um erro de envio/leitura."""
+    if isinstance(err, OSError):
+        if err.errno in STALL_ERRNOS:
+            return "recovering"
+        if isinstance(err, FileNotFoundError) or err.errno in (errno.ENOENT, errno.ENODEV):
+            return "not_found"
+    return "error"
+
+
+# ---------------------------------------------------------------- Daemon
+
+class Daemon:
+    def __init__(self, args, sensor, power, usage):
+        self.args = args
+        self.sensor = sensor
+        self.power = power
+        self.usage = usage
+        self.status = StatusFile(args.status_file)
+        self.cli = {"unit": args.unit, "mode": args.mode, "interval": args.interval}
+        self.env = env_settings(os.environ)
+        self.config_sig = None
+        self.rapl_warned = False
+        self.cooler = None
+        self.fails = 0           # falhas seguidas de envio
+        self.last_reset = 0.0    # momento do ultimo reset USB
+        self.resets = 0
+        self.connected_msg = False
+        self.running = True
+        self.state = "ok"
+        self.last_error = None
+        self.reading = (None, None)
+        self.last_publish = 0.0
+        self.reload_config(force=True)
+
+    # --- configuracao
+
+    def _config_signature(self):
+        try:
+            st = os.stat(self.args.config)
+            return (st.st_mtime_ns, st.st_size, st.st_ino)
+        except OSError:
+            return None
+
+    def reload_config(self, force=False):
+        """Rele o config.json se ele mudou. Retorna True se algo foi recarregado."""
+        sig = self._config_signature()
+        if not force and sig == self.config_sig:
+            return False
+        self.config_sig = sig
+        from_json = read_config_json(self.args.config) if sig else {}
+        s = resolve_settings(self.cli, from_json, self.env)
+        self.fahrenheit = s["unit"] == "F"
+        self.percent = s["mode"] == "%"
+        if not self.percent and not self.power.available:
+            if not self.rapl_warned:
+                _log("[aviso] RAPL indisponivel (rode como root ou sem suporte). Usando modo %.")
+                self.rapl_warned = True
+            self.percent = True
+        self.interval = s["interval"]
+        if not force:
+            print(f"[config] unidade={'F' if self.fahrenheit else 'C'} "
+                  f"modo={'%' if self.percent else 'W'} intervalo={self.interval:g}s", flush=True)
+        return True
+
+    # --- status para o painel
+
+    def publish(self):
+        t, v = self.reading
+        self.status.write({
+            "version": VERSION,
+            "state": self.state,
+            "device": self.cooler.path if self.cooler else None,
+            "temp": round(t, 1) if t is not None else None,
+            "unit": "F" if self.fahrenheit else "C",
+            "value": round(v, 1) if v is not None else None,
+            "mode": "%" if self.percent else "W",
+            "rapl": self.power.available,
+            "last_error": self.last_error,
+            "resets": self.resets,
+            "updated": time.time(),
+        })
+        self.last_publish = time.monotonic()
+
+    # --- loop
+
+    def read_values(self):
+        # Le uso e potencia todo ciclo, assim trocar W/% mostra um valor certo na hora.
+        use = self.usage.read()
+        pw = self.power.read() if self.power.available else None
+        if self.args.test:
+            return self.args.test
+        t = int(_read(self.sensor)) / 1000.0
+        if self.fahrenheit:
+            t = t * 1.8 + 32
+        return t, (use if self.percent else (pw or 0.0))
+
+    def step(self):
+        """Le os sensores e envia um pacote. Retorna True se o display recebeu."""
+        args = self.args
+        pkt = None  # so fica preenchido se o erro vier do envio ao cooler
+        try:
+            t, val = self.read_values()
+            self.reading = (t, val)
+            pkt = build_packet(t, val, self.fahrenheit, self.percent)
+            if args.verbose or args.dry_run:
+                unit = "F" if self.fahrenheit else "C"
+                print(f"temp={t:.1f}{unit}  {'uso' if self.percent else 'pot'}={val:.1f}"
+                      f"{'%' if self.percent else 'W'}  pkt={' '.join(f'{b:02x}' for b in pkt[:8])}", flush=True)
+
+            if not args.dry_run:
+                if self.cooler is None:
+                    path = args.device or find_hidraw()
+                    if not path:
+                        raise FileNotFoundError(errno.ENOENT, "cooler 1A2C:4984 nao conectado")
+                    self.cooler = Cooler(path)
+                    if not self.connected_msg:
+                        print(f"Conectado em {path}", flush=True)
+                        self.connected_msg = True
+                self.cooler.send_feature(pkt)
+                if self.fails:
+                    print(f"[ok] cooler voltou a responder apos {self.fails} falha(s)", flush=True)
+                self.fails = 0
+            self.state, self.last_error = "ok", None
+            self.publish()
+            return True
+        except (OSError, ValueError) as e:
+            return self.handle_error(e, pkt)
+
+    def handle_error(self, e, pkt):
+        args = self.args
+        self.fails += 1
+        if self.fails <= 3 or self.fails % 20 == 0:
+            _log(f"[erro] {e} (falha {self.fails}) - tentando de novo")
+        dev_for_reset = self.cooler.path if self.cooler else None
+        if self.cooler:
+            self.cooler.close()
+            self.cooler = None
+        self.connected_msg = False
+        self.state = classify_error(e) if pkt is not None else "error"
+        self.last_error = str(e)
+        self.publish()
+        # O firmware do display as vezes trava e passa a recusar os
+        # pacotes (EPIPE/EPROTO). Um reset USB destrava sem desligar o PC.
+        if (pkt is not None and not args.dry_run
+                and should_reset(e, self.fails, time.monotonic() - self.last_reset)):
+            self.last_reset = time.monotonic()
+            node = usb_node_for(dev_for_reset or args.device or find_hidraw())
+            if node:
+                try:
+                    usb_reset(node)
+                    self.resets += 1
+                    _log(f"[recuperacao] cooler travado, reset USB em {node}")
+                    self.cooler = reopen_after_reset(args.device, pkt)
+                except OSError as re_err:
+                    _log(f"[recuperacao] falhou o reset USB ({re_err})")
+            if self.cooler:
+                print(f"[ok] cooler voltou a responder apos reset em {self.cooler.path}",
+                      flush=True)
+                self.connected_msg = True
+                self.fails = 0
+                self.state, self.last_error = "ok", None
+                self.publish()
+                return True
+        return False
+
+    def wait(self, seconds):
+        """Espera em passos de ate 1 s, aplicando mudancas do config.json na hora
+        e mantendo o 'updated' do status.json fresco para o painel."""
+        end = time.monotonic() + seconds
+        while self.running:
+            left = end - time.monotonic()
+            if left <= 0:
+                return
+            time.sleep(min(1.0, left))
+            if self.reload_config():
+                return
+            if time.monotonic() - self.last_publish >= 1.0:
+                self.publish()
+
+    def run(self):
+        time.sleep(0.5)  # primeira janela p/ uso/potencia
+        while self.running:
+            if self.step():
+                self.wait(self.interval)
+            else:
+                self.wait(3 if self.fails < 10 else 5)
+        if self.cooler:
+            self.cooler.close()
+
+
 # ---------------------------------------------------------------- Main
 
 def main():
     ap = argparse.ArgumentParser(description="Driver Linux do display do Rise Mode Air Cooler Temp 6")
-    ap.add_argument("--unit", choices=["C", "F"], default=os.environ.get("RM_UNIT", "C"),
+    ap.add_argument("--unit", choices=["C", "F"], type=str.upper, default=None,
                     help="Unidade de temperatura (padrao C)")
-    ap.add_argument("--mode", choices=["W", "%"], default=os.environ.get("RM_MODE", "W"),
+    ap.add_argument("--mode", choices=["W", "%"], type=str.upper, default=None,
                     help="Segundo valor: potencia (W) ou uso (%%). Sem RAPL cai pra %%")
-    ap.add_argument("--interval", type=float, default=float(os.environ.get("RM_INTERVAL", "1.0")))
+    ap.add_argument("--interval", type=float, default=None, help="Segundos entre envios (padrao 1)")
     ap.add_argument("--device", default=os.environ.get("RM_DEVICE") or None,
                     help="Forcar /dev/hidrawN")
     ap.add_argument("--sensor", default=os.environ.get("RM_SENSOR") or None,
                     help="Forcar caminho do tempN_input")
+    ap.add_argument("--config", default=CONFIG_PATH,
+                    help=f"Arquivo de configuracao do painel (padrao {CONFIG_PATH})")
+    ap.add_argument("--status-file", default=STATUS_PATH,
+                    help=f"Onde gravar o status para o painel (padrao {STATUS_PATH}, '' desliga)")
     ap.add_argument("--dry-run", action="store_true", help="So mostra leituras, nao envia")
     ap.add_argument("--info", action="store_true", help="Mostra dispositivo, sensores e firmware e sai")
     ap.add_argument("--test", nargs=2, type=int, metavar=("TEMP", "VALOR"),
                     help="Envia valores fixos (ex: --test 42 65) para testar o display")
+    ap.add_argument("--version", action="version", version=f"risemode-cooler {VERSION}")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
-    fahrenheit = args.unit == "F"
     sensor = args.sensor or find_cpu_temp_sensor()
     usage = CpuUsage()
     power = CpuPower()
-    percent = args.mode == "%"
-    if not percent and not power.available:
-        print("[aviso] RAPL indisponivel (rode como root ou sem suporte). Usando modo %.",
-              file=sys.stderr)
-        percent = True
-
-    dev_path = args.device or find_hidraw()
 
     if args.info:
+        dev_path = args.device or find_hidraw()
+        s = resolve_settings({"unit": args.unit, "mode": args.mode, "interval": args.interval},
+                             read_config_json(args.config), env_settings(os.environ))
+        print(f"Versao          : {VERSION}")
         print(f"Dispositivo HID : {dev_path or 'NAO ENCONTRADO (VID 1A2C PID 4984)'}")
         print(f"Sensor de temp  : {sensor or 'NAO ENCONTRADO'}")
         print(f"RAPL (potencia) : {power.path or 'indisponivel'}")
+        print(f"Configuracao    : unidade {s['unit']}, modo {s['mode']}, "
+              f"intervalo {s['interval']:g}s")
         if dev_path:
             try:
                 c = Cooler(dev_path)
@@ -352,88 +655,14 @@ def main():
         print("Nao achei sensor de temperatura da CPU. Use --sensor.", file=sys.stderr)
         return 1
 
-    running = True
+    daemon = Daemon(args, sensor, power, usage)
 
     def stop(*_):
-        nonlocal running
-        running = False
+        daemon.running = False
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-
-    cooler = None
-    fails = 0          # falhas seguidas de envio
-    last_reset = 0.0   # momento do ultimo reset USB
-    connected_msg = False
-    time.sleep(0.5)  # primeira janela p/ uso/potencia
-
-    while running:
-        pkt = None  # so fica preenchido se o erro vier do envio ao cooler
-        try:
-            if args.test:
-                t, val = args.test
-            else:
-                t = int(_read(sensor)) / 1000.0
-                if fahrenheit:
-                    t = t * 1.8 + 32
-                val = usage.read() if percent else (power.read() or 0.0)
-
-            pkt = build_packet(t, val, fahrenheit, percent)
-            if args.verbose or args.dry_run:
-                unit = "F" if fahrenheit else "C"
-                print(f"temp={t:.1f}{unit}  {'uso' if percent else 'pot'}={val:.1f}"
-                      f"{'%' if percent else 'W'}  pkt={pkt[:8].hex(' ')}", flush=True)
-
-            if not args.dry_run:
-                if cooler is None:
-                    path = args.device or find_hidraw()
-                    if not path:
-                        raise FileNotFoundError("cooler 1A2C:4984 nao conectado")
-                    cooler = Cooler(path)
-                    if not connected_msg:
-                        print(f"Conectado em {path}", flush=True)
-                        connected_msg = True
-                cooler.send_feature(pkt)
-                if fails:
-                    print(f"[ok] cooler voltou a responder apos {fails} falha(s)", flush=True)
-                fails = 0
-        except (OSError, ValueError) as e:
-            fails += 1
-            if fails <= 3 or fails % 20 == 0:
-                print(f"[erro] {e} (falha {fails}) - tentando de novo", file=sys.stderr, flush=True)
-            dev_for_reset = cooler.path if cooler else None
-            if cooler:
-                cooler.close()
-                cooler = None
-            connected_msg = False
-            # O firmware do display as vezes trava e passa a recusar os
-            # pacotes (EPIPE/EPROTO). Um reset USB destrava sem desligar o PC.
-            if (pkt is not None and not args.dry_run
-                    and should_reset(e, fails, time.monotonic() - last_reset)):
-                last_reset = time.monotonic()
-                node = usb_node_for(dev_for_reset or args.device or find_hidraw())
-                if node:
-                    try:
-                        usb_reset(node)
-                        print(f"[recuperacao] cooler travado, reset USB em {node}",
-                              file=sys.stderr, flush=True)
-                        cooler = reopen_after_reset(args.device, pkt)
-                    except OSError as re_err:
-                        print(f"[recuperacao] falhou o reset USB ({re_err})",
-                              file=sys.stderr, flush=True)
-                if cooler:
-                    print(f"[ok] cooler voltou a responder apos reset em {cooler.path}",
-                          flush=True)
-                    connected_msg = True
-                    fails = 0
-                    time.sleep(args.interval)
-                    continue
-            time.sleep(3 if fails < 10 else 5)
-            continue
-        time.sleep(args.interval)
-
-    if cooler:
-        cooler.close()
+    daemon.run()
     return 0
 
 

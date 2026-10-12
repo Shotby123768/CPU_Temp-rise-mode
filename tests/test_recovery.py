@@ -87,7 +87,8 @@ class RecoveryTest(unittest.TestCase):
             if sum(1 for e in self.events if e[0] == "send" and e[1]) >= ok_sends:
                 raise Stop
         self.clock.on_sleep = check
-        sys.argv = ["risemode-cooler", "--test", "42", "65", "--mode", "%"]
+        sys.argv = ["risemode-cooler", "--test", "42", "65", "--mode", "%",
+                    "--config", "/nonexistent/config.json", "--status-file", ""]
         with self.assertRaises(Stop):
             self.mod.main()
 
@@ -140,9 +141,10 @@ class RecoveryTest(unittest.TestCase):
         self.fail_plan = [False, True, False, True, False]
         self.run_until(ok_sends=3)
         self.assertEqual([e[0] for e in self.events].count("reset"), 1)
-        second_fail = [e for e in self.events if e[0] == "send" and not e[1]][1]
-        after = self._sleeps_between(second_fail[2], second_fail[2] + 10)
-        self.assertEqual(after[0], 3)
+        sends = [e for e in self.events if e[0] == "send"]
+        second_fail = [e for e in sends if not e[1]][1]
+        next_try = sends[sends.index(second_fail) + 1]
+        self.assertAlmostEqual(next_try[2] - second_fail[2], 3.0)
 
     def test_other_errors_wait_three_failures(self):
         mod = self.mod

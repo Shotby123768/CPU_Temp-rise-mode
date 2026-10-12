@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>cpu temp rise mode - Adaptador Linux</vendor>
+  <icon_name>risemode-cooler</icon_name>
+
+  <action id="com.github.risemode-cooler.set-config">
+    <description>Change the cooler display settings</description>
+    <description xml:lang="pt_BR">Mudar a configuração do display do cooler</description>
+    <message>Authentication is required to change the cooler display settings</message>
+    <message xml:lang="pt_BR">Digite sua senha para mudar a configuração do display do cooler</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/lib/risemode-cooler/set-config</annotate>
+  </action>
+</policyconfig>

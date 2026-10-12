@@ -1,6 +1,6 @@
 # cpu temp rise mode - Adaptador Linux
 
-![versão](https://img.shields.io/badge/versão-1.2-ffb547) ![licença](https://img.shields.io/badge/licença-MIT-2b5c8a) ![python](https://img.shields.io/badge/python-3.6%2B-1b2531) ![dependências](https://img.shields.io/badge/dependências-zero-2f7d4f)
+![versão](https://img.shields.io/badge/versão-2.0-ffb547) ![licença](https://img.shields.io/badge/licença-MIT-2b5c8a) ![python](https://img.shields.io/badge/python-3.6%2B-1b2531) ![dependências](https://img.shields.io/badge/dependências-zero-2f7d4f)
 
 🌐 **Site com passo a passo para iniciantes:** https://SEU-SITE.netlify.app
 
@@ -10,6 +10,10 @@ O software oficial ("CPU TEMP Monitor") só existe para Windows. Sem ele, o disp
 
 - 🌡️ **Temperatura da CPU** em °C ou °F
 - ⚡ **Consumo da CPU em Watts** ou 📊 **uso da CPU em %**
+
+Desde a 2.0 tem também um **painel gráfico** para ver as leituras e trocar °C/°F e W/% sem usar o terminal.
+
+![Painel do cooler](docs/painel.png)
 
 > ⚠️ Projeto independente, feito por engenharia reversa para interoperabilidade. **Não é afiliado, endossado ou suportado pela Rise Mode.** Use por sua conta e risco.
 
@@ -23,14 +27,16 @@ O software oficial ("CPU TEMP Monitor") só existe para Windows. Sem ele, o disp
 4. [Instalação passo a passo](#instalação-passo-a-passo)
 5. [Atualização](#atualização)
 6. [Uso no dia a dia](#uso-no-dia-a-dia)
-7. [Configuração](#configuração)
-8. [Comandos do script](#comandos-do-script)
-9. [Solução de problemas](#solução-de-problemas)
-10. [Desinstalação](#desinstalação)
-11. [Como funciona (protocolo)](#como-funciona-protocolo)
-12. [Arquivos do projeto](#arquivos-do-projeto)
-13. [Contribuindo](#contribuindo)
-14. [Versões](#versões)
+7. [Painel](#painel)
+8. [Configuração](#configuração)
+9. [Comandos do script](#comandos-do-script)
+10. [Solução de problemas](#solução-de-problemas)
+11. [Desinstalação](#desinstalação)
+12. [Como funciona (protocolo)](#como-funciona-protocolo)
+13. [Arquitetura (daemon e painel)](#arquitetura-daemon-e-painel)
+14. [Arquivos do projeto](#arquivos-do-projeto)
+15. [Contribuindo](#contribuindo)
+16. [Versões](#versões)
 
 ---
 
@@ -65,6 +71,12 @@ Se aparecer uma linha, o display usa este protocolo.
 
 Não precisa instalar nenhuma biblioteca. O script fala direto com o kernel via `/dev/hidraw` e lê os sensores em `/sys`.
 
+O **painel** (opcional) precisa do PyGObject com GTK 4 ou GTK 3. Ele já vem instalado no Zorin, no Ubuntu e no Mint. Se faltar, o instalador avisa e instala só o adaptador. Para instalar o que falta:
+
+```bash
+sudo apt install python3-gi gir1.2-gtk-4.0
+```
+
 ---
 
 ## Instalação rápida
@@ -79,6 +91,8 @@ cd ~ && rm -rf risemode-cooler-linux && tar xzf "$(find ~ -maxdepth 3 -name 'ris
 3. Digite sua senha quando pedir (ela não aparece enquanto você digita, é normal).
 
 Pronto. O display passa a mostrar a temperatura em poucos segundos, e o serviço liga sozinho toda vez que o PC iniciar. Pode fechar o terminal.
+
+Para abrir o painel, procure **Rise Mode Cooler** no menu de aplicativos.
 
 O comando acha o arquivo baixado mais recente em qualquer pasta (`Downloads`, `Transferências`…), extrai e instala.
 
@@ -129,7 +143,9 @@ O instalador:
 
 - copia o script para `/usr/local/bin/risemode-cooler`
 - cria uma regra udev (`/etc/udev/rules.d/99-risemode-cooler.rules`) que libera o acesso ao cooler
-- cria o arquivo de configuração `/etc/default/risemode-cooler` (se ainda não existir)
+- cria a configuração `/etc/risemode-cooler/config.json` (se ainda não existir; na atualização da 1.x, traz o `RM_UNIT`, o `RM_MODE` e o `RM_INTERVAL` que você já usava)
+- instala o helper `/usr/local/lib/risemode-cooler/set-config` e a permissão do polkit, que o painel usa para salvar a configuração
+- instala o painel, o atalho no menu e o ícone (se o PyGObject existir)
 - registra, ativa e (re)inicia o serviço systemd `risemode-cooler`
 
 Se aparecer `Active: active (running)`, está funcionando.
@@ -138,12 +154,12 @@ Se aparecer `Active: active (running)`, está funcionando.
 
 ## Atualização
 
-Baixe o arquivo novo e rode **o mesmo comando da instalação rápida**. Sua configuração em `/etc/default/risemode-cooler` é mantida e o serviço é reiniciado automaticamente.
+Baixe o arquivo novo e rode **o mesmo comando da instalação rápida**. Suas preferências são mantidas e o serviço é reiniciado automaticamente. Vindo da 1.x, o instalador copia o `RM_UNIT`, o `RM_MODE` e o `RM_INTERVAL` do `/etc/default/risemode-cooler` para o novo `/etc/risemode-cooler/config.json`.
 
 Para conferir a versão instalada:
 
 ```bash
-grep -m1 Versao /usr/local/bin/risemode-cooler
+risemode-cooler --version
 ```
 
 ---
@@ -169,38 +185,61 @@ sudo systemctl disable --now risemode-cooler  # parar e não iniciar mais no boo
 
 ---
 
+## Painel
+
+Abra pelo menu de aplicativos: **Rise Mode Cooler**.
+
+![Painel do cooler](docs/painel.png)
+
+- Os números são os mesmos que estão no display do cooler, atualizados a cada segundo.
+- Clique em **°C / °F** ou **W / %** para mudar o que o display mostra. Na primeira vez, o sistema pede sua senha. Depois ele lembra por alguns minutos.
+- A mudança aparece no cooler em 1 ou 2 segundos. Não precisa reiniciar nada.
+- Se você cancelar a senha, nada muda.
+- **Reiniciar serviço** serve para quando o display parou e não voltou sozinho.
+
+Embaixo aparece o estado do adaptador:
+
+| Mensagem | O que significa |
+|---|---|
+| Conectado ao cooler | Tudo certo |
+| Display travou, recuperando… | O chip do display travou. O adaptador destrava sozinho em poucos segundos |
+| Cooler não encontrado. Confira o cabo USB interno. | O cooler não aparece no USB |
+| Serviço parado | O adaptador não está rodando. Clique em **Reiniciar serviço** |
+
+O painel é opcional. Sem ele, o display funciona do mesmo jeito.
+
+---
+
 ## Configuração
 
-Edite o arquivo de configuração:
+O jeito mais fácil é pelo [painel](#painel). Pelo terminal, use o mesmo helper que o painel usa. A mudança vale na hora, sem reiniciar:
 
 ```bash
-sudo nano /etc/default/risemode-cooler
+sudo /usr/local/lib/risemode-cooler/set-config unit=F          # Fahrenheit
+sudo /usr/local/lib/risemode-cooler/set-config mode=%          # uso em %
+sudo /usr/local/lib/risemode-cooler/set-config interval=2      # a cada 2 s
 ```
 
-```bash
-# Unidade da temperatura: C ou F
-RM_UNIT=C
-# Segundo valor no display: W (potência) ou % (uso da CPU)
-RM_MODE=W
-# Intervalo de atualização em segundos
-RM_INTERVAL=1
-# (opcional) forçar sensor de temperatura
-# RM_SENSOR=/sys/class/hwmon/hwmon1/temp1_input
-```
+A configuração fica em `/etc/risemode-cooler/config.json`:
 
-Salve (`Ctrl+O`, `Enter`, `Ctrl+X`) e aplique:
-
-```bash
-sudo systemctl restart risemode-cooler
+```json
+{"unit": "C", "mode": "W", "interval": 1}
 ```
 
 | Opção | Valores | Padrão | O que faz |
 |---|---|---|---|
-| `RM_UNIT` | `C`, `F` | `C` | Temperatura em Celsius ou Fahrenheit (acende o ícone correspondente no display) |
-| `RM_MODE` | `W`, `%` | `W` | Mostra a potência da CPU em Watts ou o uso em porcentagem |
-| `RM_INTERVAL` | número | `1` | Segundos entre cada atualização |
+| `unit` | `C`, `F` | `C` | Temperatura em Celsius ou Fahrenheit (acende o ícone correspondente no display) |
+| `mode` | `W`, `%` | `W` | Mostra a potência da CPU em Watts ou o uso em porcentagem |
+| `interval` | 1 a 10 | `1` | Segundos entre cada atualização |
+
+Opções avançadas continuam no `/etc/default/risemode-cooler` (depois de mudar, rode `sudo systemctl restart risemode-cooler`):
+
+| Opção | Valores | Padrão | O que faz |
+|---|---|---|---|
 | `RM_SENSOR` | caminho | automático | Força um sensor de temperatura específico |
 | `RM_DEVICE` | `/dev/hidrawN` | automático | Força um dispositivo específico |
+
+As variáveis `RM_UNIT`, `RM_MODE` e `RM_INTERVAL` da 1.x ainda funcionam se o `config.json` não existir. Ordem de prioridade: opções da linha de comando > `config.json` > `RM_*` > padrão.
 
 > **Sobre o modo W:** a potência é lida via RAPL (`/sys/class/powercap`), disponível em CPUs Intel e AMD Zen. Se sua CPU não suportar, o script muda automaticamente para `%` e avisa no log.
 
@@ -227,6 +266,9 @@ sudo python3 risemode-cooler.py [opções]
 | `--interval N` | Intervalo em segundos |
 | `--device /dev/hidrawN` | Força um dispositivo específico |
 | `--sensor CAMINHO` | Força um sensor de temperatura específico |
+| `--config CAMINHO` | Outro `config.json` (padrão `/etc/risemode-cooler/config.json`) |
+| `--status-file CAMINHO` | Onde gravar o status para o painel (padrão `/run/risemode-cooler/status.json`) |
+| `--version` | Mostra a versão |
 
 Antes de rodar manualmente, pare o serviço para os dois não brigarem pelo display:
 
@@ -275,7 +317,7 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 ### `RAPL indisponivel ... Usando modo %`
 
 - Se rodou sem `sudo`: normal. A leitura de energia exige root, e o serviço já roda como root.
-- Se aparece mesmo no serviço: sua CPU ou kernel não expõe RAPL. Use `RM_MODE=%`.
+- Se aparece mesmo no serviço: sua CPU ou kernel não expõe RAPL. Use o modo `%` (no painel, ou `set-config mode=%`).
 
 ### A temperatura no display não bate com a da CPU
 
@@ -292,7 +334,7 @@ O certo é `coretemp` → `Package id 0` (Intel) ou `k10temp` → `Tctl` (AMD). 
 for f in /sys/class/hwmon/hwmon*/temp*_label; do echo "$f: $(cat $f)"; done
 ```
 
-E adicione ao `/etc/default/risemode-cooler` (trocando pelo seu caminho, com `_input` no lugar de `_label`):
+E adicione ao `/etc/default/risemode-cooler` (`sudo nano /etc/default/risemode-cooler`) (trocando pelo seu caminho, com `_input` no lugar de `_label`):
 
 ```bash
 RM_SENSOR=/sys/class/hwmon/hwmon1/temp1_input
@@ -307,6 +349,18 @@ E reinicie: `sudo systemctl restart risemode-cooler`.
 1. Pare o serviço: `sudo systemctl stop risemode-cooler`
 2. Teste: `sudo risemode-cooler --test 42 65 -v`
 3. Se o teste não aparecer no display, abra uma issue com a saída de `--info` e de `lsusb -v -d 1a2c:4984`
+
+### O painel não aparece no menu
+
+O instalador só instala o painel se o PyGObject existir. Instale e rode o `install.sh` de novo:
+
+```bash
+sudo apt install python3-gi gir1.2-gtk-4.0
+```
+
+### O painel diz "Serviço parado"
+
+Clique em **Reiniciar serviço**. Se continuar, veja os erros com o comando abaixo.
 
 ### Ver erros do serviço
 
@@ -324,7 +378,7 @@ De dentro da pasta extraída:
 sudo ./uninstall.sh
 ```
 
-Isso remove o script, o serviço, a regra udev e o arquivo de configuração.
+Isso remove o script, o serviço, a regra udev, o painel, o helper, a permissão do polkit e os arquivos de configuração.
 
 ---
 
@@ -363,19 +417,61 @@ O software oficial usa o LibreHardwareMonitor para ler temperatura, potência e 
 
 ---
 
+## Arquitetura (daemon e painel)
+
+```
+          systemd (root)                               você (usuário comum)
+  ┌──────────────────────────┐   status.json    ┌──────────────────────────┐
+  │ risemode-cooler (daemon) │ ───────────────▶ │ risemode-cooler-panel    │
+  │  lê sensores, envia ao   │                  │  (GTK)                   │
+  │  cooler a cada 1 s       │ ◀─────────────── │                          │
+  └──────────────────────────┘   config.json    └────────────┬─────────────┘
+                                      ▲                      │ pkexec
+                                      └──── set-config ◀─────┘
+```
+
+O daemon roda como root. O painel roda como usuário comum. Os dois conversam só por arquivos:
+
+**`/run/risemode-cooler/status.json`** (daemon → painel). Gravado a cada envio e pelo menos uma vez por segundo. A gravação é atômica: o daemon escreve num arquivo temporário e troca com `os.replace`, então o painel nunca lê um arquivo pela metade. O diretório é criado pelo systemd (`RuntimeDirectory=`) e some quando o serviço para.
+
+```json
+{"version": "2.0", "state": "ok", "device": "/dev/hidraw5",
+ "temp": 54.0, "unit": "C", "value": 24.0, "mode": "%", "rapl": true,
+ "last_error": null, "resets": 3, "updated": 1760300000.0}
+```
+
+- `state`: `ok`, `recovering` (display travado, resetando), `not_found` (cooler não está no USB) ou `error`
+- `temp` e `value` são os números que estão no display (a temperatura já em °F, se for o caso)
+- `device` é `null` no `--dry-run`
+- se `updated` tiver mais de 5 s, o painel considera o serviço parado
+
+**`/etc/risemode-cooler/config.json`** (painel → daemon). O daemon confere a data de modificação desse arquivo a cada segundo e aplica a mudança na hora, sem reiniciar.
+
+**`/usr/local/lib/risemode-cooler/set-config`** (helper). O painel não pode escrever em `/etc`, então chama este helper com `pkexec`. O helper aceita **só** `unit=C|F`, `mode=W|%` e `interval=1..10`, recusa qualquer outra coisa e grava o JSON de forma atômica. A permissão fica em `/usr/share/polkit-1/actions/com.github.risemode-cooler.policy` com `auth_admin_keep`: a senha é pedida uma vez e vale por alguns minutos.
+
+---
+
 ## Arquivos do projeto
 
 ```
 risemode-cooler-linux/
-├── risemode-cooler.py         # o driver (Python puro, sem dependências)
+├── risemode-cooler.py         # o driver/daemon (Python puro, sem dependências)
+├── risemode-cooler-panel.py   # o painel gráfico (GTK 4 ou 3)
+├── set-config                 # helper que grava o config.json (via pkexec)
 ├── risemode-cooler.service    # unidade systemd
 ├── 99-risemode-cooler.rules   # regra udev de permissão
 ├── install.sh                 # instalador
 ├── uninstall.sh               # desinstalador
+├── data/
+│   ├── com.github.risemode-cooler.policy   # permissão do polkit
+│   ├── risemode-cooler-panel.desktop       # atalho no menu
+│   └── risemode-cooler.svg                 # ícone
+├── docs/
+│   └── painel.png             # print do painel
+├── tests/                     # testes automáticos (rodam sem o cooler)
 ├── LICENSE                    # MIT
 ├── CHANGELOG.md               # histórico de versões
-├── README.md                  # este manual
-└── tests/                     # testes automáticos (rodam sem o cooler)
+└── README.md                  # este manual
 ```
 
 ---
@@ -409,6 +505,7 @@ uname -r && cat /etc/os-release | head -2
 
 Veja o [CHANGELOG](CHANGELOG.md). Resumo:
 
+- **2.0:** painel gráfico para ver as leituras e trocar °C/°F e W/% sem terminal. A configuração passa para `/etc/risemode-cooler/config.json` e vale na hora, sem reiniciar.
 - **1.2:** o display volta em 2 a 4 s quando trava (reset USB já na primeira falha e reabertura rápida).
 - **1.1:** recuperação automática quando o display trava (reset USB), logs mais limpos, instalador reinicia o serviço ao atualizar, opções `RM_SENSOR` e `RM_DEVICE`.
 - **1.0:** primeira versão.

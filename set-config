@@ -1,0 +1,132 @@
+#!/usr/bin/python3 -I
+"""set-config - grava /etc/risemode-cooler/config.json com seguranca.
+
+O painel chama este helper como root via pkexec. Ele aceita APENAS:
+
+    unit=C | unit=F
+    mode=W | mode=%
+    interval=N        (numero de 1 a 10, ex: 1, 2, 2.5)
+
+Exemplos:
+    set-config unit=F
+    set-config mode=% interval=2
+    set-config            # sem argumentos: cria o arquivo com o padrao (ou normaliza)
+
+Qualquer outra coisa e rejeitada (codigo de saida 2) e nada e gravado.
+A gravacao e atomica: arquivo temporario no mesmo diretorio + os.replace.
+"""
+import json
+import os
+import re
+import sys
+import tempfile
+
+CONFIG_PATH = "/etc/risemode-cooler/config.json"
+DEFAULTS = {"unit": "C", "mode": "W", "interval": 1}
+KEYS = ("unit", "mode", "interval")
+MAX_ARG_LEN = 16
+_INTERVAL_RE = re.compile(r"[0-9]{1,2}(\.[0-9]{1,2})?")
+
+
+class Invalid(ValueError):
+    pass
+
+
+def parse_value(key, raw):
+    if key == "unit" and raw in ("C", "F"):
+        return raw
+    if key == "mode" and raw in ("W", "%"):
+        return raw
+    if key == "interval" and _INTERVAL_RE.fullmatch(raw):
+        v = float(raw)
+        if 1 <= v <= 10:
+            return int(v) if v.is_integer() else v
+    raise Invalid(f"valor invalido para {key}")
+
+
+def parse_args(argv):
+    """Transforma ['unit=F', ...] num dict validado. Levanta Invalid se algo nao bater."""
+    if len(argv) > len(KEYS):
+        raise Invalid("argumentos demais")
+    out = {}
+    for arg in argv:
+        if not isinstance(arg, str) or len(arg) > MAX_ARG_LEN or arg.count("=") != 1:
+            raise Invalid("use chave=valor")
+        key, raw = arg.split("=")
+        if key not in KEYS:
+            raise Invalid("chave nao permitida")
+        if key in out:
+            raise Invalid(f"{key} repetido")
+        out[key] = parse_value(key, raw)
+    return out
+
+
+def load_current(path):
+    """Valores validos do arquivo atual por cima do padrao. Lixo e descartado."""
+    cur = dict(DEFAULTS)
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return cur
+    if not isinstance(data, dict):
+        return cur
+    for key in KEYS:
+        val = data.get(key)
+        if isinstance(val, bool) or not isinstance(val, (str, int, float)):
+            continue
+        try:
+            cur[key] = parse_value(key, val if isinstance(val, str) else repr(val))
+        except Invalid:
+            pass
+    return cur
+
+
+def write_atomic(path, data):
+    d = os.path.dirname(path)
+    os.makedirs(d, exist_ok=True)
+    os.chmod(d, 0o755)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".config-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    dfd = os.open(d, os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+
+
+def main(argv):
+    try:
+        changes = parse_args(argv)
+    except Invalid as e:
+        print(f"set-config: {e}. Aceito: unit=C|F mode=W|% interval=1..10", file=sys.stderr)
+        return 2
+    if os.geteuid() != 0:
+        print("set-config: precisa rodar como root (o painel usa pkexec)", file=sys.stderr)
+        return 1
+    data = load_current(CONFIG_PATH)
+    data.update(changes)
+    try:
+        write_atomic(CONFIG_PATH, data)
+    except OSError as e:
+        print(f"set-config: nao consegui gravar {CONFIG_PATH}: {e}", file=sys.stderr)
+        return 1
+    print(json.dumps(data))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

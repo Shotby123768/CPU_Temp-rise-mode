@@ -8,6 +8,9 @@ EnvironmentFile=-/etc/default/risemode-cooler
 ExecStart=/usr/bin/python3 /usr/local/bin/risemode-cooler
 Restart=always
 RestartSec=3
+# Cria /run/risemode-cooler (status.json para o painel)
+RuntimeDirectory=risemode-cooler
+RuntimeDirectoryMode=0755
 
 [Install]
 WantedBy=multi-user.target
