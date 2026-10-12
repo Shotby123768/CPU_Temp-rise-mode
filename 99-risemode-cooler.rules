@@ -1,0 +1,2 @@
+# Rise Mode Air Cooler Temp 6 (1A2C:4984) - libera acesso ao hidraw sem root
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1a2c", ATTRS{idProduct}=="4984", MODE="0666", TAG+="uaccess"
