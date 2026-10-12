@@ -1,6 +1,6 @@
 # cpu temp rise mode - Adaptador Linux
 
-![versão](https://img.shields.io/badge/versão-1.1-ffb547) ![licença](https://img.shields.io/badge/licença-MIT-2b5c8a) ![python](https://img.shields.io/badge/python-3.6%2B-1b2531) ![dependências](https://img.shields.io/badge/dependências-zero-2f7d4f)
+![versão](https://img.shields.io/badge/versão-1.2-ffb547) ![licença](https://img.shields.io/badge/licença-MIT-2b5c8a) ![python](https://img.shields.io/badge/python-3.6%2B-1b2531) ![dependências](https://img.shields.io/badge/dependências-zero-2f7d4f)
 
 🌐 **Site com passo a passo para iniciantes:** https://SEU-SITE.netlify.app
 
@@ -140,10 +140,10 @@ Se aparecer `Active: active (running)`, está funcionando.
 
 Baixe o arquivo novo e rode **o mesmo comando da instalação rápida**. Sua configuração em `/etc/default/risemode-cooler` é mantida e o serviço é reiniciado automaticamente.
 
-Para conferir se está na 1.1 ou mais nova:
+Para conferir a versão instalada:
 
 ```bash
-grep -c recuperacao /usr/local/bin/risemode-cooler   # maior que 0 = 1.1+
+grep -m1 Versao /usr/local/bin/risemode-cooler
 ```
 
 ---
@@ -155,7 +155,7 @@ grep -c recuperacao /usr/local/bin/risemode-cooler   # maior que 0 = 1.1+
 - o serviço inicia sozinho no boot, em segundo plano
 - não precisa deixar terminal aberto
 - se o cooler for desconectado e reconectado, ele reconecta sozinho em ~3 segundos
-- se o chip do display travar e parar de aceitar dados, ele reinicia o USB do cooler sozinho (v1.1+)
+- se o chip do display travar e parar de aceitar dados, ele reinicia o USB do cooler sozinho, e o display volta em poucos segundos (v1.1+)
 
 Comandos úteis:
 
@@ -241,14 +241,14 @@ sudo risemode-cooler -v
 
 ### O display apagou ou congelou depois de um tempo
 
-O chip do display às vezes trava e passa a recusar os dados (no log aparece `Broken pipe`). A partir da **v1.1** o adaptador detecta isso depois de 3 falhas seguidas, faz um reset USB do cooler e volta a enviar. No log aparece:
+O chip do display às vezes trava e passa a recusar os dados (no log aparece `Broken pipe`). O adaptador detecta isso, faz um reset USB do cooler e volta a enviar sozinho. Na **v1.2** isso acontece já na primeira falha, e o display fica parado só uns 2 a 4 segundos. No log aparece:
 
 ```
 [recuperacao] cooler travado, reset USB em /dev/bus/usb/001/007
-[ok] cooler voltou a responder apos 3 falha(s)
+[ok] cooler voltou a responder apos reset em /dev/hidraw5
 ```
 
-Se você está na 1.0, [atualize](#atualização). Para destravar na hora:
+Se você está numa versão mais antiga, [atualize](#atualização). Para destravar na hora:
 
 ```bash
 sudo usbreset 1a2c:4984 && sudo systemctl restart risemode-cooler
@@ -374,7 +374,8 @@ risemode-cooler-linux/
 ├── uninstall.sh               # desinstalador
 ├── LICENSE                    # MIT
 ├── CHANGELOG.md               # histórico de versões
-└── README.md                  # este manual
+├── README.md                  # este manual
+└── tests/                     # testes automáticos (rodam sem o cooler)
 ```
 
 ---
@@ -386,6 +387,12 @@ Contribuições são bem-vindas, principalmente:
 - testes em **CPUs AMD** e em outras distros
 - outros modelos Rise Mode com display
 - suporte à temperatura da **GPU** (o software oficial tem os ícones, mas o protocolo de GPU ainda não foi mapeado)
+
+Para rodar os testes (não precisa do cooler):
+
+```bash
+python3 -m unittest discover -s tests -v
+```
 
 Ao abrir uma issue, inclua a saída de:
 
@@ -402,6 +409,7 @@ uname -r && cat /etc/os-release | head -2
 
 Veja o [CHANGELOG](CHANGELOG.md). Resumo:
 
+- **1.2:** o display volta em 2 a 4 s quando trava (reset USB já na primeira falha e reabertura rápida).
 - **1.1:** recuperação automática quando o display trava (reset USB), logs mais limpos, instalador reinicia o serviço ao atualizar, opções `RM_SENSOR` e `RM_DEVICE`.
 - **1.0:** primeira versão.
 

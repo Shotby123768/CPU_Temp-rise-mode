@@ -2,7 +2,7 @@
 """
 Rise Mode Air Cooler Temp 6 (display digital) - driver para Linux.
 
-Versao 1.1
+Versao 1.2
 
 Reimplementa o protocolo do "CPU TEMP Monitor" (DeviceDriver.exe) do Windows:
   - Dispositivo USB HID 1A2C:4984, interface com usage page 0xFF01
@@ -100,6 +100,51 @@ def usb_reset(node):
         fcntl.ioctl(fd, USBDEVFS_RESET, 0)
     finally:
         os.close(fd)
+
+
+# Erros que indicam firmware do display travado (so um reset USB resolve).
+STALL_ERRNOS = (errno.EPIPE, errno.EPROTO, errno.ETIMEDOUT, errno.EIO)
+RESET_MIN_GAP = 30.0   # segundos minimos entre dois resets USB
+REOPEN_STEP = 0.5      # apos o reset, tenta reabrir a cada 0,5 s...
+REOPEN_TIMEOUT = 5.0   # ...por ate 5 s
+
+
+def should_reset(err, fails, since_last_reset):
+    """Decide se vale resetar o USB agora.
+
+    EPIPE (STALL do firmware) reseta ja na 1a falha; os outros erros de
+    travamento esperam 3 falhas seguidas. Nunca mais de um reset a cada 30 s.
+    """
+    if not isinstance(err, OSError) or err.errno not in STALL_ERRNOS:
+        return False
+    if since_last_reset <= RESET_MIN_GAP:
+        return False
+    return fails >= (1 if err.errno == errno.EPIPE else 3)
+
+
+def reopen_after_reset(device, pkt):
+    """Depois do reset, reabre o hidraw e reenvia o pacote assim que der.
+
+    O dispositivo some e reaparece em ~1-2 s, as vezes com outro numero de
+    hidraw, por isso chama find_hidraw() a cada tentativa. Retorna o Cooler
+    ja aberto (com o pacote enviado) ou None se nao voltou dentro do prazo.
+    """
+    deadline = time.monotonic() + REOPEN_TIMEOUT
+    while time.monotonic() < deadline:
+        time.sleep(REOPEN_STEP)
+        path = device or find_hidraw()
+        if not path:
+            continue
+        try:
+            c = Cooler(path)
+        except OSError:
+            continue
+        try:
+            c.send_feature(pkt)
+            return c
+        except OSError:
+            c.close()
+    return None
 
 
 class Cooler:
@@ -323,6 +368,7 @@ def main():
     time.sleep(0.5)  # primeira janela p/ uso/potencia
 
     while running:
+        pkt = None  # so fica preenchido se o erro vier do envio ao cooler
         try:
             if args.test:
                 t, val = args.test
@@ -362,10 +408,8 @@ def main():
             connected_msg = False
             # O firmware do display as vezes trava e passa a recusar os
             # pacotes (EPIPE/EPROTO). Um reset USB destrava sem desligar o PC.
-            stalled = isinstance(e, OSError) and e.errno in (errno.EPIPE, errno.EPROTO,
-                                                             errno.ETIMEDOUT, errno.EIO)
-            if (stalled and fails >= 3 and not args.dry_run
-                    and time.monotonic() - last_reset > 30):
+            if (pkt is not None and not args.dry_run
+                    and should_reset(e, fails, time.monotonic() - last_reset)):
                 last_reset = time.monotonic()
                 node = usb_node_for(dev_for_reset or args.device or find_hidraw())
                 if node:
@@ -373,10 +417,17 @@ def main():
                         usb_reset(node)
                         print(f"[recuperacao] cooler travado, reset USB em {node}",
                               file=sys.stderr, flush=True)
-                        time.sleep(2)  # aguarda o dispositivo reaparecer
+                        cooler = reopen_after_reset(args.device, pkt)
                     except OSError as re_err:
                         print(f"[recuperacao] falhou o reset USB ({re_err})",
                               file=sys.stderr, flush=True)
+                if cooler:
+                    print(f"[ok] cooler voltou a responder apos reset em {cooler.path}",
+                          flush=True)
+                    connected_msg = True
+                    fails = 0
+                    time.sleep(args.interval)
+                    continue
             time.sleep(3 if fails < 10 else 5)
             continue
         time.sleep(args.interval)
