@@ -48,7 +48,7 @@ Desde a 2.0 tem também um **painel gráfico** para ver as leituras e trocar °C
 | Outros coolers Rise Mode com display `1A2C:4984` | 🟡 Deve funcionar (mesmo software oficial) |
 | CPU Intel (sensor `coretemp`) | ✅ Testado |
 | CPU AMD Ryzen (sensor `k10temp` / `zenpower`) | 🟡 Suportado, não testado ainda |
-| Zorin OS 17 | ✅ Testado |
+| Zorin OS 17 e 18.1 | ✅ Testado |
 | Ubuntu, Linux Mint, Pop!_OS, Debian, Fedora, Arch… | 🟡 Deve funcionar (qualquer distro com systemd) |
 
 Testou em outro hardware ou distro? [Abra uma issue](../../issues) contando o resultado.
