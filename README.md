@@ -2,7 +2,7 @@
 
 ![versão](https://img.shields.io/badge/versão-2.0-ffb547) ![licença](https://img.shields.io/badge/licença-MIT-2b5c8a) ![python](https://img.shields.io/badge/python-3.6%2B-1b2531) ![dependências](https://img.shields.io/badge/dependências-zero-2f7d4f)
 
-🌐 **Site com passo a passo para iniciantes:** https://SEU-SITE.netlify.app
+🌐 **Site com passo a passo para iniciantes:** https://cputemp-adp.netlify.app
 
 Driver não oficial para Linux do **display digital do Rise Mode Air Cooler Temp 6** (e outros coolers Rise Mode com o mesmo display — USB `1A2C:4984`).
 
